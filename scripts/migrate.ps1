@@ -37,6 +37,66 @@ function Write-Err {
 }
 
 # ==============================================================================
+# Core Execution Logic (Handles Dirty DB Recovery)
+# ==============================================================================
+
+function Invoke-MigrateCommand {
+    param([string[]]$CommandArgs)
+
+    # Run the migrate command and capture output/errors
+    $output = migrate -path $MigrationsPath -database $DbUrl @CommandArgs 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        $outputString = $output | Out-String
+        
+        if ($outputString -match "dirty database") {
+            # Extract the dirty version number
+            if ($outputString -match "Dirty database version (\d+)") {
+                $dirtyVer = [int]$Matches[1]
+                $forceVer = $dirtyVer - 1
+            } else {
+                Write-Err "Dirty database detected, but could not parse version number from output:"
+                Write-Host $output
+                exit 1
+            }
+
+            Write-Err "Database is dirty at version $dirtyVer."
+            Write-Host "$([char]0x1b)[31mgolang-migrate has locked the database to prevent corruption.$([char]0x1b)[0m"
+            Write-Host "$([char]0x1b)[33mPlease ensure you have manually fixed the database schema in your DB client.$([char]0x1b)[0m"
+            
+            $confirm = Read-Host "Have you fixed the schema? (Type 'yes' to force to v$forceVer and retry, or 'no' to abort)"
+            
+            if ($confirm -eq "yes") {
+                Write-Info "Forcing database to clean state (version $forceVer)..."
+                $forceOutput = migrate -path $MigrationsPath -database $DbUrl force $forceVer 2>&1
+
+                if ($LASTEXITCODE -ne 0) {
+                    Write-Err "Failed to force database version!"
+                    Write-Host $forceOutput
+                    exit 1
+                }
+
+                Write-Success "Database forced to version $forceVer successfully."
+                Write-Info "Retrying original command: migrate $CommandArgs..."
+                Write-Host "--------------------------------------------------"
+                
+                # Recursive call to retry the original command
+                Invoke-MigrateCommand -CommandArgs $CommandArgs
+            } else {
+                Write-Warn "Aborted by user. Please fix the database manually and run the force command yourself."
+                exit 0
+            }
+        } else {
+            # Not a dirty database error, just a normal failure
+            Write-Err "Migration failed!"
+            Write-Host $output
+            exit 1
+        }
+    }
+    # If LASTEXITCODE is 0, we silently return to the calling function
+}
+
+# ==============================================================================
 # Pre-flight Checks
 # ==============================================================================
 
@@ -77,34 +137,11 @@ function Invoke-Up {
         exit 0
     }
 
-    # Capture output and errors
-    $output = migrate -path $MigrationsPath -database $DbUrl up 2>&1
+    # Call the unified executor
+    Invoke-MigrateCommand -CommandArgs @("up")
     
-    if ($LASTEXITCODE -ne 0) {
-        $outputString = $output | Out-String
-        if ($outputString -match "dirty database") {
-            Write-Err "The database is DIRTY! A previous migration failed midway."
-            Write-Host "$([char]0x1b)[31m----------------------------------------------------------------------------------$([char]0x1b)[0m"
-            Write-Host "$([char]0x1b)[31mgolang-migrate has locked the database to prevent corruption.$([char]0x1b)[0m"
-            Write-Host "$([char]0x1b)[31m1. Check your database client to see what partially executed.$([char]0x1b)[0m"
-            Write-Host "$([char]0x1b)[31m2. Manually undo the partial changes.$([char]0x1b)[0m"
-            Write-Host "$([char]0x1b)[31m3. Run the force command below to unlock it:$([char]0x1b)[0m"
-            
-            if ($outputString -match "Dirty database version (\d+)") {
-                $prevVer = [int]$Matches[1] - 1
-                Write-Host "$([char]0x1b)[33m   migrate -path `"$MigrationsPath`" -database `"`$DB_URL`" force $prevVer$([char]0x1b)[0m"
-            } else {
-                Write-Host "$([char]0x1b)[33m   migrate -path `"$MigrationsPath`" -database `"`$DB_URL`" force <version>$([char]0x1b)[0m"
-            }
-            Write-Host "$([char]0x1b)[31m----------------------------------------------------------------------------------$([char]0x1b)[0m"
-        } else {
-            Write-Err "UP migration failed!"
-            Write-Host $output
-        }
-        exit 1
-    } else {
-        Write-Success "Database migrated up successfully!"
-    }
+    # If Invoke-MigrateCommand didn't exit, it succeeded
+    Write-Success "Database migrated up successfully!"
 }
 
 function Invoke-Down {
@@ -119,21 +156,11 @@ function Invoke-Down {
         exit 0
     }
 
-    $output = migrate -path $MigrationsPath -database $DbUrl down $Count 2>&1
-
-    if ($LASTEXITCODE -ne 0) {
-        $outputString = $output | Out-String
-        if ($outputString -match "dirty database") {
-            Write-Err "The database is DIRTY! A previous migration failed midway."
-            Write-Host "$([char]0x1b)[31mRun 'force' to unlock it, but ensure the DB schema is manually fixed first.$([char]0x1b)[0m"
-        } else {
-            Write-Err "DOWN migration failed!"
-            Write-Host $output
-        }
-        exit 1
-    } else {
-        Write-Success "Database rolled back $Count step(s) successfully!"
-    }
+    # Call the unified executor
+    Invoke-MigrateCommand -CommandArgs @("down", "$Count")
+    
+    # If Invoke-MigrateCommand didn't exit, it succeeded
+    Write-Success "Database rolled back $Count step(s) successfully!"
 }
 
 function Invoke-Create {
@@ -144,13 +171,15 @@ function Invoke-Create {
     }
 
     Write-Info "Creating new migration files with sequence..."
-    migrate create -ext sql -dir $MigrationsPath -seq $Name
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Migration files created successfully! Don't forget to write your UP and DOWN SQL."
-    } else {
-        Write-Err "Failed to create migration files."
+    $output = migrate create -ext sql -dir $MigrationsPath -seq $Name 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Err "Failed to create migration files!"
+        Write-Host $output
         exit 1
     }
+    
+    Write-Success "Migration files created successfully! Don't forget to write your UP and DOWN SQL."
 }
 
 # ==============================================================================

@@ -29,6 +29,68 @@ log_warn() { echo -e "$(date '+%Y-%m-%d %H:%M:%S') ${YELLOW}[WARNING]${NC} $1"; 
 log_error() { echo -e "$(date '+%Y-%m-%d %H:%M:%S') ${RED}[ERROR]${NC} $1"; }
 
 # ==============================================================================
+# Core Execution Logic (Handles Dirty DB Recovery)
+# ==============================================================================
+
+execute_migrate() {
+    local cmd_args=("$@")
+    
+    # Run the migrate command and capture output/errors
+    local output
+    output=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" "${cmd_args[@]}" 2>&1)
+    local exit_code=$?
+
+    if [ $exit_code -ne 0 ]; then
+        if echo "$output" | grep -iq "dirty database"; then
+            # Extract the dirty version number safely
+            local dirty_ver=$(echo "$output" | grep -oE 'Dirty database version [0-9]+' | grep -oE '[0-9]+')
+            
+            if [ -z "$dirty_ver" ]; then
+                log_error "Dirty database detected, but could not parse version number from output:"
+                echo "$output"
+                exit 1
+            fi
+            
+            local force_ver=$((dirty_ver - 1))
+            
+            log_error "Database is dirty at version $dirty_ver."
+            echo -e "${RED}golang-migrate has locked the database to prevent corruption.${NC}"
+            echo -e "${YELLOW}Please ensure you have manually fixed the database schema in your DB client.${NC}"
+            
+            read -p "Have you fixed the schema? (Type 'yes' to force to v$force_ver and retry, or 'no' to abort): " confirm
+            
+            if [ "$confirm" = "yes" ]; then
+                log_info "Forcing database to clean state (version $force_ver)..."
+                local force_output
+                force_output=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" force "$force_ver" 2>&1)
+                
+                if [ $? -ne 0 ]; then
+                    log_error "Failed to force database version!"
+                    echo "$force_output"
+                    exit 1
+                fi
+                
+                log_success "Database forced to version $force_ver successfully."
+                log_info "Retrying original command: migrate ${cmd_args[*]}..."
+                echo "--------------------------------------------------"
+                
+                # Recursive call to retry the original command
+                execute_migrate "${cmd_args[@]}"
+            else
+                log_warn "Aborted by user. Please fix the database manually and run the force command yourself."
+                exit 0
+            fi
+        else
+            # Not a dirty database error, just a normal failure
+            log_error "Migration failed!"
+            echo "$output"
+            exit 1
+        fi
+    fi
+    # If exit_code is 0, we silently return to the calling function
+}
+
+# ==============================================================================
 # Pre-flight Checks
 # ==============================================================================
 
@@ -63,37 +125,11 @@ run_up() {
         exit 0
     fi
 
-    # Capture both stdout and stderr to check for the "dirty" keyword
-    MIGRATE_OUTPUT=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" up 2>&1)
-    MIGRATE_EXIT_CODE=$?
-
-    if [ $MIGRATE_EXIT_CODE -ne 0 ]; then
-        if echo "$MIGRATE_OUTPUT" | grep -iq "dirty database"; then
-            log_error "The database is DIRTY! A previous migration failed midway."
-            echo -e "${RED}----------------------------------------------------------------------------------${NC}"
-            echo -e "${RED}golang-migrate has locked the database to prevent corruption.${NC}"
-            echo -e "${RED}1. Check your database client (DBeaver/pgAdmin) to see what partially executed.${NC}"
-            echo -e "${RED}2. Manually undo the partial changes so your DB matches the state BEFORE the failed version.${NC}"
-            echo -e "${RED}3. Run the force command below to unlock it:${NC}"
-            
-            # Extract the version number safely without perl-regex
-            DIRTY_VER=$(echo "$MIGRATE_OUTPUT" | grep -o 'Dirty database version [0-9]*' | grep -o '[0-9]*')
-            
-            if [ -n "$DIRTY_VER" ]; then
-                PREV_VER=$((DIRTY_VER - 1))
-                echo -e "${YELLOW}   migrate -path \"$MIGRATIONS_PATH\" -database \"\$DB_URL\" force $PREV_VER${NC}"
-            else
-                echo -e "${YELLOW}   migrate -path \"$MIGRATIONS_PATH\" -database \"\$DB_URL\" force <version>${NC}"
-            fi
-            echo -e "${RED}----------------------------------------------------------------------------------${NC}"
-        else
-            log_error "UP migration failed!"
-            echo "$MIGRATE_OUTPUT"
-        fi
-        exit 1
-    else
-        log_success "Database migrated up successfully!"
-    fi
+    # Call the unified executor
+    execute_migrate up
+    
+    # If execute_migrate didn't exit, it succeeded
+    log_success "Database migrated up successfully!"
 }
 
 run_down() {
@@ -108,21 +144,11 @@ run_down() {
         exit 0
     fi
 
-    MIGRATE_OUTPUT=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" down "$count" 2>&1)
-    MIGRATE_EXIT_CODE=$?
-
-    if [ $MIGRATE_EXIT_CODE -ne 0 ]; then
-        if echo "$MIGRATE_OUTPUT" | grep -iq "dirty database"; then
-            log_error "The database is DIRTY! A previous migration failed midway."
-            echo -e "${RED}Run 'force' to unlock it, but ensure the DB schema is manually fixed first.${NC}"
-        else
-            log_error "DOWN migration failed!"
-            echo "$MIGRATE_OUTPUT"
-        fi
-        exit 1
-    else
-        log_success "Database rolled back $count step(s) successfully!"
-    fi
+    # Call the unified executor
+    execute_migrate down "$count"
+    
+    # If execute_migrate didn't exit, it succeeded
+    log_success "Database rolled back $count step(s) successfully!"
 }
 
 run_create() {
@@ -133,12 +159,16 @@ run_create() {
     fi
 
     log_info "Creating new migration files with sequence..."
-    if migrate create -ext sql -dir "$MIGRATIONS_PATH" -seq "$name"; then
-        log_success "Migration files created successfully! Don't forget to write your UP and DOWN SQL."
-    else
-        log_error "Failed to create migration files."
+    local output
+    output=$(migrate create -ext sql -dir "$MIGRATIONS_PATH" -seq "$name" 2>&1)
+    
+    if [ $? -ne 0 ]; then
+        log_error "Failed to create migration files!"
+        echo "$output"
         exit 1
     fi
+    
+    log_success "Migration files created successfully! Don't forget to write your UP and DOWN SQL."
 }
 
 # ==============================================================================
