@@ -1,11 +1,11 @@
 package main
 
 import (
-	"log"
-
-	"github.com/ayaz9988/goTodoAndAuth.git/internal/config"
-	"github.com/ayaz9988/goTodoAndAuth.git/internal/database"
-	"github.com/gin-gonic/gin"
+  "log"
+  
+  "github.com/ayaz9988/goTodoAndAuth.git/internal/config"
+  "github.com/ayaz9988/goTodoAndAuth.git/internal/database"
+  "github.com/gin-gonic/gin"
 )
 
 func main() {
