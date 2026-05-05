@@ -77,12 +77,33 @@ function Invoke-Up {
         exit 0
     }
 
-    migrate -path $MigrationsPath -database $DbUrl up
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Database migrated up successfully!"
-    } else {
-        Write-Err "UP migration failed!"
+    # Capture output and errors
+    $output = migrate -path $MigrationsPath -database $DbUrl up 2>&1
+    
+    if ($LASTEXITCODE -ne 0) {
+        $outputString = $output | Out-String
+        if ($outputString -match "dirty database") {
+            Write-Err "The database is DIRTY! A previous migration failed midway."
+            Write-Host "$([char]0x1b)[31m----------------------------------------------------------------------------------$([char]0x1b)[0m"
+            Write-Host "$([char]0x1b)[31mgolang-migrate has locked the database to prevent corruption.$([char]0x1b)[0m"
+            Write-Host "$([char]0x1b)[31m1. Check your database client to see what partially executed.$([char]0x1b)[0m"
+            Write-Host "$([char]0x1b)[31m2. Manually undo the partial changes.$([char]0x1b)[0m"
+            Write-Host "$([char]0x1b)[31m3. Run the force command below to unlock it:$([char]0x1b)[0m"
+            
+            if ($outputString -match "Dirty database version (\d+)") {
+                $prevVer = [int]$Matches[1] - 1
+                Write-Host "$([char]0x1b)[33m   migrate -path `"$MigrationsPath`" -database `"`$DB_URL`" force $prevVer$([char]0x1b)[0m"
+            } else {
+                Write-Host "$([char]0x1b)[33m   migrate -path `"$MigrationsPath`" -database `"`$DB_URL`" force <version>$([char]0x1b)[0m"
+            }
+            Write-Host "$([char]0x1b)[31m----------------------------------------------------------------------------------$([char]0x1b)[0m"
+        } else {
+            Write-Err "UP migration failed!"
+            Write-Host $output
+        }
         exit 1
+    } else {
+        Write-Success "Database migrated up successfully!"
     }
 }
 
@@ -98,19 +119,27 @@ function Invoke-Down {
         exit 0
     }
 
-    migrate -path $MigrationsPath -database $DbUrl down $Count
-    if ($LASTEXITCODE -eq 0) {
-        Write-Success "Database rolled back $Count step(s) successfully!"
-    } else {
-        Write-Err "DOWN migration failed!"
+    $output = migrate -path $MigrationsPath -database $DbUrl down $Count 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        $outputString = $output | Out-String
+        if ($outputString -match "dirty database") {
+            Write-Err "The database is DIRTY! A previous migration failed midway."
+            Write-Host "$([char]0x1b)[31mRun 'force' to unlock it, but ensure the DB schema is manually fixed first.$([char]0x1b)[0m"
+        } else {
+            Write-Err "DOWN migration failed!"
+            Write-Host $output
+        }
         exit 1
+    } else {
+        Write-Success "Database rolled back $Count step(s) successfully!"
     }
 }
 
 function Invoke-Create {
     param ([string]$Name)
     if ([string]::IsNullOrWhiteSpace($Name)) {
-        Write-Err "Migration name is required. Usage: .\db.ps1 create <name>"
+        Write-Err "Migration name is required. Usage: .\migrate.ps1 create <name>"
         exit 1
     }
 

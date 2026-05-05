@@ -4,8 +4,6 @@
 # Database Migration Manager
 # ==============================================================================
 
-set -e # Exit immediately if a command exits with a non-zero status
-
 # Determine the directory where this script lives
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 PROJECT_ROOT="$SCRIPT_DIR/.."
@@ -44,7 +42,7 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# Safely parse the .env file to get DATABASE_URL
+# Safely parse the .env file to get DATABASE_URL (strips quotes)
 DB_URL=$(grep -E '^\s*DATABASE_URL\s*=' "$ENV_FILE" | head -n 1 | cut -d '=' -f 2- | tr -d '"' | tr -d "'" | xargs)
 
 if [ -z "$DB_URL" ]; then
@@ -65,11 +63,36 @@ run_up() {
         exit 0
     fi
 
-    if migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" up; then
-        log_success "Database migrated up successfully!"
-    else
-        log_error "UP migration failed!"
+    # Capture both stdout and stderr to check for the "dirty" keyword
+    MIGRATE_OUTPUT=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" up 2>&1)
+    MIGRATE_EXIT_CODE=$?
+
+    if [ $MIGRATE_EXIT_CODE -ne 0 ]; then
+        if echo "$MIGRATE_OUTPUT" | grep -iq "dirty database"; then
+            log_error "The database is DIRTY! A previous migration failed midway."
+            echo -e "${RED}----------------------------------------------------------------------------------${NC}"
+            echo -e "${RED}golang-migrate has locked the database to prevent corruption.${NC}"
+            echo -e "${RED}1. Check your database client (DBeaver/pgAdmin) to see what partially executed.${NC}"
+            echo -e "${RED}2. Manually undo the partial changes so your DB matches the state BEFORE the failed version.${NC}"
+            echo -e "${RED}3. Run the force command below to unlock it:${NC}"
+            
+            # Extract the version number safely without perl-regex
+            DIRTY_VER=$(echo "$MIGRATE_OUTPUT" | grep -o 'Dirty database version [0-9]*' | grep -o '[0-9]*')
+            
+            if [ -n "$DIRTY_VER" ]; then
+                PREV_VER=$((DIRTY_VER - 1))
+                echo -e "${YELLOW}   migrate -path \"$MIGRATIONS_PATH\" -database \"\$DB_URL\" force $PREV_VER${NC}"
+            else
+                echo -e "${YELLOW}   migrate -path \"$MIGRATIONS_PATH\" -database \"\$DB_URL\" force <version>${NC}"
+            fi
+            echo -e "${RED}----------------------------------------------------------------------------------${NC}"
+        else
+            log_error "UP migration failed!"
+            echo "$MIGRATE_OUTPUT"
+        fi
         exit 1
+    else
+        log_success "Database migrated up successfully!"
     fi
 }
 
@@ -85,11 +108,20 @@ run_down() {
         exit 0
     fi
 
-    if migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" down "$count"; then
-        log_success "Database rolled back $count step(s) successfully!"
-    else
-        log_error "DOWN migration failed!"
+    MIGRATE_OUTPUT=$(migrate -path "$MIGRATIONS_PATH" -database "$DB_URL" down "$count" 2>&1)
+    MIGRATE_EXIT_CODE=$?
+
+    if [ $MIGRATE_EXIT_CODE -ne 0 ]; then
+        if echo "$MIGRATE_OUTPUT" | grep -iq "dirty database"; then
+            log_error "The database is DIRTY! A previous migration failed midway."
+            echo -e "${RED}Run 'force' to unlock it, but ensure the DB schema is manually fixed first.${NC}"
+        else
+            log_error "DOWN migration failed!"
+            echo "$MIGRATE_OUTPUT"
+        fi
         exit 1
+    else
+        log_success "Database rolled back $count step(s) successfully!"
     fi
 }
 
