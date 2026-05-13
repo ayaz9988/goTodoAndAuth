@@ -119,7 +119,7 @@ func UpdateTodo(pool *pgxpool.Pool, id int, title string, completed bool, user_i
 		RETURNING id, title, completed, created_at, updated_at, user_id
 	`
 	var todo models.Todo
-	if err := pool.QueryRow(ctx, query, title, completed, user_id).Scan(
+	if err := pool.QueryRow(ctx, query, title, completed, id, user_id).Scan(
 		&todo.ID,
 		&todo.Title,
 		&todo.Completed,
