@@ -254,7 +254,6 @@ Repository("📊 REPOSITORY<br/>━━━━━━━━━━━━━<br/>▼ 
 | -------------- | ------ | -------------------------------------- | ------------------------------------------------------------- |
 | User Register  | POST   | `http://localhost:3000/auth/register`  | `{"email": "user@example.com", "password": "securepassword"}` |
 | User Login     | POST   | `http://localhost:3000/auth/login`     | `{"email": "user@example.com", "password": "securepassword"}` |
-| Protected Test | GET    | `http://localhost:3000/protected-test` | -                                                             |
 
 ### Todo Requests (Protected)
 
@@ -265,7 +264,6 @@ Repository("📊 REPOSITORY<br/>━━━━━━━━━━━━━<br/>▼ 
 | Get Single To Do | GET    | `http://localhost:3000/todos/:id` | -                                           |
 | Update To Do     | PUT    | `http://localhost:3000/todos/:id` | `{"title": "Updated", "completed": true}`   |
 | Delete To Do     | DELETE | `http://localhost:3000/todos/:id` | -                                           |
-| Home Route       | GET    | `http://localhost:3000/`          | -                                           |
 
 ### Authorization Setup
 
@@ -316,8 +314,4 @@ CREATE TABLE todos (
 
 ## License
 
-This project is licensed under the MIT License.
-
----
-
-Happy Coding and Learning! 🙂
+This project is licensed under the GNU GENERAL PUBLIC LICENSE.
