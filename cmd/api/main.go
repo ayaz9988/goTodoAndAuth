@@ -6,6 +6,7 @@ import (
 	"github.com/ayaz9988/goTodoAndAuth.git/internal/config"
 	"github.com/ayaz9988/goTodoAndAuth.git/internal/database"
 	"github.com/ayaz9988/goTodoAndAuth.git/internal/handlers"
+	"github.com/ayaz9988/goTodoAndAuth.git/internal/middleware"
 	"github.com/gin-gonic/gin"
 )
 
@@ -31,11 +32,16 @@ func main() {
 		})
 	})
 
-	router.POST("/todos", handlers.CreateTodoHandler(pool))
-	router.GET("/todos", handlers.GetAllTodoHandler(pool))
-	router.GET("/todos/:id", handlers.GetTodoByIDHandler(pool))
-	router.PUT("/todos/:id", handlers.UpdateTodoHandler(pool))
-	router.DELETE("/todos/:id", handlers.DeleteTodoHandler(pool))
-	
+	router.POST("/auth/register", handlers.CreateUserHandler(pool))
+	router.POST("/auth/login", handlers.LoginHandler(pool, cfg))
+	{	
+		protected := router.Group("/todos")
+		protected.Use(middleware.AuthMiddleware(cfg))
+		protected.POST("", handlers.CreateTodoHandler(pool))
+		protected.GET("", handlers.GetAllTodoHandler(pool))
+		protected.GET("/:id", handlers.GetTodoByIDHandler(pool))
+		protected.PUT("/:id", handlers.UpdateTodoHandler(pool))
+		protected.DELETE("/:id", handlers.DeleteTodoHandler(pool))
+	}	
 	router.Run(":" + cfg.Port)
 }
